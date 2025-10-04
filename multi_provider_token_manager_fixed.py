@@ -601,11 +601,13 @@ class MultiProviderGUI:
     def __init__(self):
         self.token_manager = TokenManager()
         self.running = True
-        self.model_var = tk.StringVar()
         
         self.root = tk.Tk()
         self.root.title("Multi-Provider Token Manager v2.0")
         self.root.geometry("1400x900")
+        
+        # Now we can create StringVar after root window exists
+        self.model_var = tk.StringVar()
         
         # Configure close protocol
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
