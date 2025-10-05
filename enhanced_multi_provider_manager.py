@@ -20,6 +20,7 @@ from enum import Enum
 import base64
 from cryptography.fernet import Fernet
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -394,6 +395,66 @@ class EnhancedTokenManager:
         self.config_file = os.path.expanduser("~/.token_manager_config.json")
         self.load_config()
         self.load_from_env()
+        
+        # Auto-refresh settings
+        self.auto_refresh_enabled = True
+        self.auto_refresh_interval = 300  # 5 minutes default
+        self.last_auto_refresh = None
+        self.refresh_in_progress = False
+        self.cached_models = {}
+        self.cache_timestamp = None
+    
+    def should_auto_refresh(self) -> bool:
+        """Check if auto-refresh should run (non-blocking check)"""
+        if not self.auto_refresh_enabled:
+            return False
+        
+        if self.refresh_in_progress:
+            return False
+        
+        if self.last_auto_refresh is None:
+            return True
+        
+        elapsed = (datetime.now() - self.last_auto_refresh).total_seconds()
+        return elapsed >= self.auto_refresh_interval
+    
+    def background_refresh_models(self) -> Dict[str, List[Dict]]:
+        """Background model refresh - non-blocking, returns cached on failure"""
+        if self.refresh_in_progress:
+            # Return cached data if refresh already in progress
+            return self.cached_models or {}
+        
+        try:
+            self.refresh_in_progress = True
+            
+            # Use ThreadPoolExecutor for timeout capability
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.get_all_models)
+                try:
+                    # Timeout after 10 seconds to avoid blocking
+                    models = future.result(timeout=10)
+                    if models:
+                        self.cached_models = models
+                        self.cache_timestamp = datetime.now()
+                        self.last_auto_refresh = datetime.now()
+                    return models or self.cached_models or {}
+                except FutureTimeoutError:
+                    logger.warning("Background model refresh timed out, using cached data")
+                    return self.cached_models or {}
+        except Exception as e:
+            logger.error(f"Background refresh error: {e}")
+            return self.cached_models or {}
+        finally:
+            self.refresh_in_progress = False
+    
+    def get_cached_models(self) -> Tuple[Dict[str, List[Dict]], bool]:
+        """Get cached models with freshness indicator"""
+        is_fresh = False
+        if self.cache_timestamp:
+            age = (datetime.now() - self.cache_timestamp).total_seconds()
+            is_fresh = age < 300  # Fresh if less than 5 minutes old
+        
+        return self.cached_models or {}, is_fresh
     
     def load_from_env(self):
         """Load API keys from environment variables"""
@@ -583,9 +644,34 @@ def main():
     if 'token_manager' not in st.session_state:
         st.session_state.token_manager = EnhancedTokenManager()
     
+    if 'auto_refresh_enabled' not in st.session_state:
+        st.session_state.auto_refresh_enabled = True
+    
+    if 'last_interaction' not in st.session_state:
+        st.session_state.last_interaction = datetime.now()
+    
     token_manager = st.session_state.token_manager
+    token_manager.auto_refresh_enabled = st.session_state.auto_refresh_enabled
+    
+    # Non-blocking background auto-refresh (runs in background, never blocks UI)
+    if token_manager.should_auto_refresh():
+        # Trigger background refresh without blocking
+        threading.Thread(
+            target=token_manager.background_refresh_models,
+            daemon=True
+        ).start()
     
     st.title("🤖 Enhanced Multi-Provider Token Manager")
+    
+    # Subtle auto-refresh indicator (non-intrusive)
+    if token_manager.auto_refresh_enabled:
+        cached_models, is_fresh = token_manager.get_cached_models()
+        if token_manager.refresh_in_progress:
+            st.caption("🔄 Background refresh in progress...")
+        elif is_fresh:
+            st.caption("✓ Auto-refreshed - models up to date")
+        elif cached_models:
+            st.caption("⚠️ Using cached models - refresh recommended")
     
     # Sidebar for provider management
     with st.sidebar:
@@ -735,17 +821,33 @@ def main():
                             st.rerun()
         
         with col2:
-            if st.button("🔄 Refresh Models", use_container_width=True):
+            # Check for cached models and show freshness
+            cached_models, is_fresh = token_manager.get_cached_models()
+            
+            button_label = "🔄 Refresh Models"
+            if cached_models:
+                if is_fresh:
+                    button_label = "🔄 Refresh (auto-updated)"
+                else:
+                    button_label = "🔄 Refresh (outdated)"
+            
+            if st.button(button_label, use_container_width=True):
                 with st.spinner("Loading models..."):
                     try:
                         models = token_manager.get_all_models()
                         st.session_state.all_models = models
+                        token_manager.cached_models = models
+                        token_manager.cache_timestamp = datetime.now()
                         if models:
-                            st.success(f"Loaded {sum(len(m) for m in models.values())} models")
+                            st.success(f"✓ Loaded {sum(len(m) for m in models.values())} models")
                         else:
                             st.warning("No models loaded - check API keys and provider status")
                     except Exception as e:
                         st.error(f"Error loading models: {e}")
+            
+            # Use cached models if available and no manual refresh
+            if 'all_models' not in st.session_state and cached_models:
+                st.session_state.all_models = cached_models
         
         with col3:
             # Rotate provider button
@@ -878,6 +980,56 @@ def main():
     
     with tab3:
         st.header("Settings")
+        
+        # Auto-refresh settings
+        st.subheader("⚡ Auto-Refresh Settings")
+        st.markdown("""
+        Auto-refresh runs in the background without interrupting your workflow.
+        It keeps model lists and provider status up-to-date automatically.
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            auto_refresh = st.checkbox(
+                "Enable Auto-Refresh",
+                value=st.session_state.auto_refresh_enabled,
+                help="Automatically refresh models and status in background (non-blocking)"
+            )
+            
+            if auto_refresh != st.session_state.auto_refresh_enabled:
+                st.session_state.auto_refresh_enabled = auto_refresh
+                token_manager.auto_refresh_enabled = auto_refresh
+                st.success(f"Auto-refresh {'enabled' if auto_refresh else 'disabled'}")
+        
+        with col2:
+            refresh_interval = st.selectbox(
+                "Refresh Interval",
+                options=[60, 180, 300, 600, 900],
+                index=2,  # Default to 300 (5 minutes)
+                format_func=lambda x: f"{x//60} minute{'s' if x//60 != 1 else ''}",
+                help="How often to refresh in background"
+            )
+            
+            if refresh_interval != token_manager.auto_refresh_interval:
+                token_manager.auto_refresh_interval = refresh_interval
+                st.success(f"Interval set to {refresh_interval//60} minutes")
+        
+        # Show auto-refresh status
+        if token_manager.last_auto_refresh:
+            time_since = (datetime.now() - token_manager.last_auto_refresh).total_seconds()
+            next_refresh_in = max(0, token_manager.auto_refresh_interval - time_since)
+            
+            st.info(f"""
+            **Auto-refresh status:**
+            - Last refresh: {int(time_since//60)} minutes ago
+            - Next refresh: in {int(next_refresh_in//60)} minutes
+            - Cache: {'Fresh ✓' if token_manager.cache_timestamp and (datetime.now() - token_manager.cache_timestamp).total_seconds() < 300 else 'Outdated'}
+            """)
+        else:
+            st.info("Auto-refresh will run soon...")
+        
+        st.divider()
         
         # Configuration file location
         st.subheader("Configuration")
