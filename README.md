@@ -56,6 +56,36 @@ export TOGETHER_API_KEY="your_key_here"
 3. Add your API keys
 4. Click "Save Configuration"
 
+---
+
+## ⚡ Auto-Refresh Feature
+
+The app includes a **non-blocking background auto-refresh** system that keeps your data fresh without interrupting your workflow!
+
+### How It Works
+- Runs in background thread (never blocks UI)
+- 10-second timeout protection
+- Falls back to cached data on failure
+- Configurable intervals (1-15 minutes)
+- Enable/disable in Settings tab
+
+### Visual Indicators
+- 🔄 "Background refresh in progress..."
+- ✓ "Auto-refreshed - models up to date"
+- ⚠️ "Using cached models - refresh recommended"
+
+### User Control
+- Toggle auto-refresh on/off
+- Set refresh interval
+- Manual refresh always available
+- Never interrupts active chat
+
+**Auto-refresh is a quiet assistant, not a gatekeeper!** It enhances your experience without getting in the way.
+
+See [AUTO_REFRESH_DOCS.md](AUTO_REFRESH_DOCS.md) for complete documentation.
+
+---
+
 ## 📁 Files
 
 ### Main Application
