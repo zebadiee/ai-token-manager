@@ -507,6 +507,12 @@ class EnhancedTokenManager:
             # Convert datetime objects to strings
             if provider_data['usage'] and provider_data['usage']['last_reset']:
                 provider_data['usage']['last_reset'] = provider_data['usage']['last_reset'].isoformat()
+            # Convert enum to string value
+            if isinstance(provider_data['status'], ProviderStatus):
+                provider_data['status'] = provider_data['status'].value
+            elif isinstance(provider_data['status'], str) and '.' in provider_data['status']:
+                # Handle already stringified enum like "ProviderStatus.ACTIVE"
+                provider_data['status'] = provider_data['status'].split('.')[-1].lower()
             config_data['providers'].append(provider_data)
         
         try:
@@ -532,6 +538,16 @@ class EnhancedTokenManager:
                         # Convert string back to datetime
                         if provider_data['usage'] and provider_data['usage']['last_reset']:
                             provider_data['usage']['last_reset'] = datetime.fromisoformat(provider_data['usage']['last_reset'])
+                        
+                        # Convert usage dict to TokenUsage object
+                        if 'usage' in provider_data and isinstance(provider_data['usage'], dict):
+                            provider_data['usage'] = TokenUsage(**provider_data['usage'])
+                        
+                        # Convert string status to enum
+                        if 'status' in provider_data and isinstance(provider_data['status'], str):
+                            # Handle both "active" and "ProviderStatus.ACTIVE" formats
+                            status_str = provider_data['status'].split('.')[-1] if '.' in provider_data['status'] else provider_data['status']
+                            provider_data['status'] = ProviderStatus(status_str)
                         
                         # Create provider based on name
                         if provider_data['name'] == 'OpenRouter':
@@ -610,7 +626,37 @@ def main():
         st.subheader("Current Providers")
         providers = token_manager.get_provider_status()
         
-        for provider in providers:
+        if providers:
+            # Provider selector
+            current_provider = token_manager.get_current_provider()
+            current_name = current_provider.config.name if current_provider else None
+            
+            provider_names = [p['name'] for p in providers]
+            if current_name in provider_names:
+                current_index = provider_names.index(current_name)
+            else:
+                current_index = 0
+            
+            selected_provider = st.selectbox(
+                "Active Provider (for chat)",
+                provider_names,
+                index=current_index,
+                key="provider_selector",
+                help="Select which provider to use for chat requests"
+            )
+            
+            # Switch provider if changed
+            if selected_provider != current_name:
+                for i, p in enumerate(token_manager.providers):
+                    if p.config.name == selected_provider:
+                        token_manager.current_provider_index = i
+                        token_manager.save_config()
+                        st.success(f"Switched to {selected_provider}")
+                        st.rerun()
+            
+            st.divider()
+        
+        for idx, provider in enumerate(providers):
             with st.container():
                 col1, col2, col3 = st.columns([2, 1, 1])
                 
@@ -622,15 +668,30 @@ def main():
                         'disabled': '⚪'
                     }
                     key_indicator = "🔑" if provider['has_key'] else "❌"
-                    st.write(f"{status_color.get(provider['status'], '⚪')} {key_indicator} **{provider['name']}**")
+                    # Show if this is the current provider
+                    is_current = (idx == token_manager.current_provider_index)
+                    current_marker = " ⭐" if is_current else ""
+                    st.write(f"{status_color.get(provider['status'], '⚪')} {key_indicator} **{provider['name']}**{current_marker}")
                 
                 with col2:
                     st.write(f"Req: {provider['requests']}/{provider['rate_limit']}")
                 
                 with col3:
-                    if st.button("Remove", key=f"remove_{provider['name']}"):
-                        token_manager.remove_provider(provider['name'])
-                        st.rerun()
+                    if st.button("Remove", key=f"remove_{provider['name']}_{idx}"):
+                        try:
+                            # Find and remove the provider
+                            for i, p in enumerate(token_manager.providers):
+                                if p.config.name == provider['name']:
+                                    token_manager.providers.pop(i)
+                                    # Adjust current index if needed
+                                    if token_manager.current_provider_index >= len(token_manager.providers):
+                                        token_manager.current_provider_index = max(0, len(token_manager.providers) - 1)
+                                    token_manager.save_config()
+                                    st.success(f"Removed {provider['name']}")
+                                    st.rerun()
+                                    break
+                        except Exception as e:
+                            st.error(f"Failed to remove provider: {e}")
         
         # Environment variables info
         st.subheader("Environment Variables")
@@ -647,14 +708,51 @@ def main():
     with tab1:
         st.header("Chat Interface")
         
-        # Model selection
-        col1, col2 = st.columns([3, 1])
+        # Provider selection and model refresh
+        col1, col2, col3 = st.columns([2, 2, 1])
         
         with col1:
-            if st.button("🔄 Refresh Models"):
+            # Provider selector in chat tab
+            current_provider = token_manager.get_current_provider()
+            if token_manager.providers:
+                provider_names = [p.config.name for p in token_manager.providers]
+                current_name = current_provider.config.name if current_provider else provider_names[0]
+                
+                selected_chat_provider = st.selectbox(
+                    "Provider",
+                    provider_names,
+                    index=provider_names.index(current_name) if current_name in provider_names else 0,
+                    key="chat_provider_selector",
+                    help="Select provider for chat"
+                )
+                
+                # Switch if changed
+                if selected_chat_provider != current_name:
+                    for i, p in enumerate(token_manager.providers):
+                        if p.config.name == selected_chat_provider:
+                            token_manager.current_provider_index = i
+                            token_manager.save_config()
+                            st.rerun()
+        
+        with col2:
+            if st.button("🔄 Refresh Models", use_container_width=True):
                 with st.spinner("Loading models..."):
-                    models = token_manager.get_all_models()
-                    st.session_state.all_models = models
+                    try:
+                        models = token_manager.get_all_models()
+                        st.session_state.all_models = models
+                        if models:
+                            st.success(f"Loaded {sum(len(m) for m in models.values())} models")
+                        else:
+                            st.warning("No models loaded - check API keys and provider status")
+                    except Exception as e:
+                        st.error(f"Error loading models: {e}")
+        
+        with col3:
+            # Rotate provider button
+            if st.button("🔀 Next", help="Switch to next provider", use_container_width=True):
+                token_manager.rotate_provider()
+                token_manager.save_config()
+                st.rerun()
         
         # Model dropdown
         all_models = getattr(st.session_state, 'all_models', {})
@@ -673,9 +771,10 @@ def main():
         # Current provider info
         current_provider = token_manager.get_current_provider()
         if current_provider:
-            st.info(f"Current Provider: **{current_provider.config.name}**")
+            key_status = "🔑 Key configured" if current_provider.api_key else "❌ No API key"
+            st.info(f"**Current Provider:** {current_provider.config.name} | {key_status}")
         else:
-            st.warning("No active providers available")
+            st.warning("⚠️ No active providers available - add a provider in the sidebar")
         
         # Chat interface
         if 'chat_history' not in st.session_state:
