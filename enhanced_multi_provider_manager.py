@@ -26,6 +26,14 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Try to import RAG assistant
+try:
+    from rag_assistant import SimpleRAG, EnhancedRAGAssistant
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    logger.warning("RAG assistant not available - install required dependencies")
+
 class ProviderStatus(Enum):
     ACTIVE = "active"
     EXHAUSTED = "exhausted" 
@@ -585,7 +593,7 @@ class EnhancedTokenManager:
             logger.error(f"Failed to save config: {e}")
     
     def load_config(self):
-        """Load configuration from file"""
+        """Load configuration from file with backward compatibility"""
         try:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r') as f:
@@ -596,19 +604,41 @@ class EnhancedTokenManager:
                 # Restore providers
                 for provider_data in config_data.get('providers', []):
                     try:
-                        # Convert string back to datetime
-                        if provider_data['usage'] and provider_data['usage']['last_reset']:
-                            provider_data['usage']['last_reset'] = datetime.fromisoformat(provider_data['usage']['last_reset'])
-                        
-                        # Convert usage dict to TokenUsage object
+                        # Handle backward compatibility for usage field
                         if 'usage' in provider_data and isinstance(provider_data['usage'], dict):
-                            provider_data['usage'] = TokenUsage(**provider_data['usage'])
+                            usage_dict = provider_data['usage']
+                            
+                            # Remove any fields that are not in current TokenUsage dataclass
+                            valid_fields = {'prompt_tokens', 'completion_tokens', 'total_tokens', 'requests', 'last_reset'}
+                            usage_dict = {k: v for k, v in usage_dict.items() if k in valid_fields}
+                            
+                            # Convert string back to datetime
+                            if usage_dict.get('last_reset'):
+                                usage_dict['last_reset'] = datetime.fromisoformat(usage_dict['last_reset'])
+                            
+                            # Create TokenUsage object
+                            provider_data['usage'] = TokenUsage(**usage_dict)
                         
-                        # Convert string status to enum
+                        # Convert string status to enum with validation
                         if 'status' in provider_data and isinstance(provider_data['status'], str):
                             # Handle both "active" and "ProviderStatus.ACTIVE" formats
                             status_str = provider_data['status'].split('.')[-1] if '.' in provider_data['status'] else provider_data['status']
-                            provider_data['status'] = ProviderStatus(status_str)
+                            
+                            # Validate status value
+                            try:
+                                provider_data['status'] = ProviderStatus(status_str)
+                            except ValueError:
+                                # If invalid status, default to ACTIVE
+                                logger.warning(f"Invalid status '{status_str}' for provider, defaulting to ACTIVE")
+                                provider_data['status'] = ProviderStatus.ACTIVE
+                        
+                        # Handle backward compatibility for api_key field
+                        if 'api_key' in provider_data and 'api_key_encrypted' not in provider_data:
+                            provider_data['api_key_encrypted'] = provider_data.pop('api_key')
+                        
+                        # Ensure api_key_encrypted exists
+                        if 'api_key_encrypted' not in provider_data:
+                            provider_data['api_key_encrypted'] = ""
                         
                         # Create provider based on name
                         if provider_data['name'] == 'OpenRouter':
@@ -617,11 +647,23 @@ class EnhancedTokenManager:
                             provider = HuggingFaceProvider()
                         elif provider_data['name'] == 'Together AI':
                             provider = TogetherAIProvider()
+                        elif provider_data['name'] == 'Exo Local':
+                            # Skip Exo Local if exo_provider is not available
+                            logger.info("Skipping Exo Local provider (requires exo_provider module)")
+                            continue
                         else:
+                            logger.warning(f"Unknown provider type: {provider_data['name']}")
                             continue
                         
-                        # Restore config
-                        provider.config = ProviderConfig(**provider_data)
+                        # Restore config - only include fields that exist in ProviderConfig
+                        valid_config_fields = {
+                            'name', 'api_key_encrypted', 'base_url', 'models_endpoint', 
+                            'chat_endpoint', 'headers', 'rate_limit', 'token_limit', 
+                            'status', 'usage'
+                        }
+                        filtered_data = {k: v for k, v in provider_data.items() if k in valid_config_fields}
+                        
+                        provider.config = ProviderConfig(**filtered_data)
                         self.providers.append(provider)
                         
                     except Exception as e:
@@ -789,7 +831,7 @@ def main():
         """)
     
     # Main content tabs
-    tab1, tab2, tab3 = st.tabs(["💬 Chat", "📊 Status", "🔧 Settings"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat", "📊 Status", "🔧 Settings", "🤖 AI Assistant"])
     
     with tab1:
         st.header("Chat Interface")
@@ -1061,6 +1103,126 @@ def main():
                     st.info("No configuration file found")
             except Exception as e:
                 st.error(f"Error reading config: {e}")
+    
+    with tab4:
+        st.header("🤖 AI Documentation Assistant")
+        
+        if not RAG_AVAILABLE:
+            st.warning("⚠️ RAG Assistant not available. The rag_assistant.py module is required.")
+            st.info("The assistant uses documentation to answer questions about setup, usage, and troubleshooting.")
+        else:
+            # Initialize RAG system
+            if 'rag_system' not in st.session_state:
+                with st.spinner("Loading documentation..."):
+                    st.session_state.rag_system = SimpleRAG()
+                    st.session_state.rag_system.load_documents()
+                    st.session_state.rag_assistant = EnhancedRAGAssistant(
+                        st.session_state.rag_system,
+                        token_manager
+                    )
+            
+            rag_assistant = st.session_state.rag_assistant
+            
+            # Quick help buttons
+            st.subheader("Quick Help Topics")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("📦 Setup & Installation", use_container_width=True):
+                    st.session_state.rag_query = "How do I install and setup the application?"
+            
+            with col2:
+                if st.button("🔑 API Keys", use_container_width=True):
+                    st.session_state.rag_query = "How do I add and manage API keys?"
+            
+            with col3:
+                if st.button("🚀 Deployment", use_container_width=True):
+                    st.session_state.rag_query = "What are my deployment options?"
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("🐛 Troubleshooting", use_container_width=True):
+                    st.session_state.rag_query = "How do I troubleshoot common errors?"
+            
+            with col2:
+                if st.button("🔒 Security", use_container_width=True):
+                    st.session_state.rag_query = "How are API keys secured?"
+            
+            with col3:
+                if st.button("⚡ Auto-Refresh", use_container_width=True):
+                    st.session_state.rag_query = "How does auto-refresh work?"
+            
+            st.divider()
+            
+            # Question input
+            if 'rag_query' not in st.session_state:
+                st.session_state.rag_query = ""
+            
+            question = st.text_input(
+                "Ask a question about the AI Token Manager:",
+                value=st.session_state.rag_query,
+                placeholder="e.g., How do I add API keys? What deployment options are available?",
+                key="rag_question_input"
+            )
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                use_ai_enhancement = st.checkbox(
+                    "🧠 Use AI Enhancement",
+                    value=False,
+                    help="Use AI provider to enhance answers (requires active provider with API key)"
+                )
+            
+            with col2:
+                search_button = st.button("🔍 Search", type="primary", use_container_width=True)
+            
+            # Display answer
+            if search_button and question:
+                st.session_state.rag_query = question
+                
+                with st.spinner("Searching documentation..."):
+                    answer = rag_assistant.ask(question, use_ai=use_ai_enhancement)
+                
+                st.subheader("Answer:")
+                st.markdown(answer)
+                
+                # Show suggestions
+                suggestions = rag_assistant.get_suggestions(question)
+                if suggestions:
+                    st.divider()
+                    st.subheader("📌 Related Suggestions:")
+                    for i, suggestion in enumerate(suggestions, 1):
+                        st.markdown(f"{i}. {suggestion}")
+                
+                # Show sources
+                with st.expander("📚 View Sources"):
+                    results = st.session_state.rag_system.search(question, top_k=3)
+                    for i, (doc, score) in enumerate(results, 1):
+                        st.markdown(f"**Source {i}:** {doc.source} (relevance: {score:.1f})")
+                        st.text(doc.content[:300] + "..." if len(doc.content) > 300 else doc.content)
+                        st.divider()
+            
+            elif question and not search_button:
+                st.info("👆 Click 'Search' or press Enter to get an answer")
+            
+            # Documentation stats
+            st.divider()
+            with st.expander("📊 Documentation Stats"):
+                if 'rag_system' in st.session_state:
+                    rag = st.session_state.rag_system
+                    st.metric("Indexed Documents", len(rag.documents))
+                    st.metric("Unique Keywords", len(rag.index))
+                    
+                    # Show document sources
+                    sources = {}
+                    for doc in rag.documents:
+                        sources[doc.source] = sources.get(doc.source, 0) + 1
+                    
+                    st.write("**Sources:**")
+                    for source, count in sorted(sources.items()):
+                        st.write(f"- {source}: {count} chunks")
 
 if __name__ == "__main__":
     try:

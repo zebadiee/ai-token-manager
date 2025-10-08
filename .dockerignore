@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Tests
+test_*.py
+*_test.py
+run_all_tests.sh
+
+# Config files (use environment variables instead)
+.env
+*.json
+*.key
+
+# Other providers/examples
+exo_*.py
+spiral_*.py
+diagnose*.py
+check_keys.py
+smoke_test.py
+multi_provider_token_manager.py
+multi_provider_token_manager_*.py
+multi_provider_enhanced.py
+multi_provider_web_manager.py
+copilot-workflow-manager.ts

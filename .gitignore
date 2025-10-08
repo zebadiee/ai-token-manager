@@ -7,10 +7,23 @@ __pycache__/
 venv/
 env/
 ENV/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
 
 # Config files with sensitive data
 .token_manager_config.json
 .token_manager_key
+*_config.json
+*.backup
 
 # IDE
 .vscode/
@@ -18,7 +31,19 @@ ENV/
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
 
 # OS
 .DS_Store
 Thumbs.db
+*.log
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Streamlit
+.streamlit/
