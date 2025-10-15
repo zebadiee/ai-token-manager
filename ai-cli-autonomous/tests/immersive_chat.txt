@@ -1,0 +1,3 @@
+quick Hello immersive mode
+chat Write a haiku about CLI tools
+exit

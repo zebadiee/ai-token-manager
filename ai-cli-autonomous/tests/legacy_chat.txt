@@ -1,0 +1,3 @@
+quick Legacy mode ping
+chat Say something brief
+exit
